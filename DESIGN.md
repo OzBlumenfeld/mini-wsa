@@ -22,7 +22,7 @@
 Mini WSA is a simplified security analytics pipeline modeled after Akamai's Web Security Analytics (WSA) platform. It ingests raw security events (DLRs), enriches them in real time, persists them to ClickHouse, and exposes REST APIs for analytics and event sampling.
 
 **Core tech stack:**
-- **Runtime:** Java 21 + Spring Boot 3.x
+- **Runtime:** Java 21 + Spring Boot 3.x (development should follow SKILL.md in spring-boot-backend for writing java and spring boot code based on the guidelines)
 - **Primary store:** ClickHouse (OLAP — append-only event storage + analytics)
 - **In-memory cache:** Redis (repeat offender sliding window)
 - **Build:** Maven
@@ -79,10 +79,14 @@ Responsibility: HTTP boundary. Validates input, maps to/from DTOs, delegates to 
 | `StatsController` | `GET /v1/stats/summary` | Return aggregated analytics for a configId + time range |
 | `SamplesController` | `GET /v1/events/samples` | Return paginated, filtered enriched events |
 
+- `GET /v1/events/samples` should have configId, from, to, category, action, limit and offset as optional parameters to filter based on them. from and to should be compatible to ISO8601.
+-  `GET /v1/stats/summary` from and to should be compatible to ISO8601.
+
 **Key design decisions:**
 - Controllers are thin — no business logic, only request/response mapping.
 - Validation handled by `@Valid` + Bean Validation annotations on DTOs.
-- A global `@ControllerAdvice` (`GlobalExceptionHandler`) translates validation failures to structured 400 responses with field-level error details.
+- Input must be validated, if input isn't from the same type or any mismatch should be `400 Bad Request` and state the issue.
+- A global `@ControllerAdvice` (`GlobalExceptionHandler`) translates validation failures to structured 400 responses with field-level error details. If rate limiting will be implemented as the bonus part returns 429 Too Many Requests for a specific exception class for ratelimiting.
 - All timestamps validated as ISO 8601; invalid formats return 400 with a clear message.
 - `POST /v1/events/ingest` accepts a JSON array of up to 500 events and returns
   `201 Created` whenever the array is parseable — even if some/all individual events fail
@@ -91,7 +95,7 @@ Responsibility: HTTP boundary. Validates input, maps to/from DTOs, delegates to 
   a type/enum mismatch in any event (Jackson fails the whole request before the controller
   method runs in those cases). Bean Validation errors (missing fields, blank strings) are
   still reported per-event.
-
+- Have Swaggert as a nice edition and for documentation.
 **DTOs (Request/Response):**
 
 ```
@@ -99,10 +103,13 @@ IngestionRequest        →  List<SecurityEventRequest>
 SecurityEventRequest    →  maps the incoming DLR JSON schema
 IngestionResponse       →  { accepted: N, rejected: N,
                              results: [ { eventId, status: "accepted"|"rejected", errors?: [...] } ] }
-StatsSummaryResponse    →  { configId, timeRange, totalEvents, byCategory, ... }
-SamplesResponse         →  { total, limit, offset, events: [...] }
-EnrichedEventDTO        →  original fields + attackType, threatScore, receivedAt
+StatsSummaryResponse    →  { configId, timeRange, totalEvents, byCategory, byAction,
+                             topAttackers, topTargetedPaths }
+SamplesResponse         →  { total, events: [...] }          ← no limit/offset in response body
+EnrichedEventResponse   →  flat record — all 23 security_events columns
 ```
+
+Stats and samples DTOs live in feature sub-packages (`api/dto/stats/`, `api/dto/samples/`) rather than a flat `api/dto/` directory, so ingestion and analytics DTOs don't collide.
 
 ---
 
@@ -169,6 +176,7 @@ threatScore    = min(severityScore + actionScore + pathBonus + repeatBonus, 100)
 ```
 
 - The `repeatBonus` check delegates to `RepeatOffenderCache`.
+- if repeatBonus happens - log as debug the client ip and current count of requests in the last 10 minutes
 
 **`RepeatOffenderCache`** _(Redis-backed)_
 - Uses a Redis sorted set per `clientIp` with the event timestamp as the score.
@@ -185,13 +193,33 @@ Responsibility: All reads and writes to ClickHouse.
 
 **Repositories:**
 
-**`EventRepository`**
+**`EventRepository`** _(write-only)_
 - `insertBatch(List<EnrichedEvent>)` — bulk insert via ClickHouse JDBC batch API.
-- `findSamples(SamplesQuery)` — parameterized SELECT with optional WHERE clauses, ORDER BY timestamp DESC, LIMIT/OFFSET.
+- Read operations live in separate interfaces; this keeps the write path decoupled (CQRS-style).
 
-**`StatsRepository`**
-- `getSummary(StatsQuery)` — single analytical query using ClickHouse aggregation functions (`count()`, `avg()`, `topK()`).
-- All aggregations happen inside ClickHouse — no in-memory aggregation in Java.
+**`StatsRepository`** _(read-only analytics)_
+- Runs **4 separate aggregation queries** — `byCategoryStats`, `byActionStats`, `topAttackers`, `topTargetedPaths` — rather than one monolithic `GROUPING SETS` query. Each query is independently readable and testable.
+- All aggregations execute inside ClickHouse (`count()`, `avg()`, `ORDER BY cnt DESC LIMIT 10`).
+- `totalEvents` is derived in `StatsService` by summing the category counts — no extra `COUNT(*)` round-trip.
+
+**`SamplesRepository`** _(read-only event retrieval)_
+- `querySamples(...)` — paginated `SELECT *` with `ORDER BY timestamp DESC LIMIT ? OFFSET ?`.
+- `countSamples(...)` — separate `SELECT count(*)` for the pagination total.
+- Both methods build WHERE clauses dynamically: `timestamp >= ? AND timestamp <= ?` is always present; `config_id`, `rule_category`, and `action` filters are appended only when non-null. Parameters flow through JDBC prepared statements — no string concatenation.
+
+**Shared JDBC pattern (both read repositories):**
+
+```java
+List<Object> params = new ArrayList<>();
+var sql = new StringBuilder("... WHERE timestamp >= ? AND timestamp <= ?");
+params.add(Timestamp.from(from));   // DateTime64 binding
+params.add(Timestamp.from(to));
+if (configId != null) { sql.append(" AND config_id = ?"); params.add(configId); }
+// ... additional optional filters
+jdbcTemplate.query(sql.toString(), rowMapper, params.toArray());
+```
+
+Both `ClickHouseStatsRepository` and `ClickHouseSamplesRepository` inject the same `JdbcTemplate` bean as the write repository — no additional DataSource configuration needed.
 
 **ClickHouse Table Schema:**
 
@@ -263,6 +291,10 @@ CLI arguments may be added later if stress-testing scenarios require it.
 - Sends events in batches of `BATCH_SIZE` to the ingestion endpoint.
 - Prints a summary: total sent, total accepted, total rejected.
 
+
+### 6. Integration Test
+- Have an Integration test based on the docker-compose suite where you bring it up, you can store the time and then as t1 and then run the script for generating the events and then test the stats summary endpoint and see that the numbers are as expected i.e. top attackers, top targeted paths by action and so on make sense, see the threat scores as well accordingly. in corporate different config ids and without config id
+
 ---
 
 ## Key Components Summary
@@ -281,8 +313,11 @@ CLI arguments may be added later if stress-testing scenarios require it.
 | `AttackClassifier` | `enrichment` | Category → attackType mapping |
 | `ThreatScoreCalculator` | `enrichment` | Score computation |
 | `RepeatOffenderCache` | `enrichment` | Redis sliding window |
-| `EventRepository` | `repository` | ClickHouse event reads/writes |
-| `StatsRepository` | `repository` | ClickHouse aggregation queries |
+| `EventRepository` | `repository` | ClickHouse bulk insert (write-only) |
+| `StatsRepository` | `repository` | ClickHouse aggregation query interface (4 methods) |
+| `ClickHouseStatsRepository` | `repository` | ClickHouse aggregation query implementation |
+| `SamplesRepository` | `repository` | ClickHouse paginated event-read interface |
+| `ClickHouseSamplesRepository` | `repository` | ClickHouse paginated SELECT implementation |
 | `EnrichedEvent` | `domain` | Core domain model (post-enrichment) |
 | `DataGeneratorRunner` | `generator` | Synthetic event generation |
 
@@ -432,18 +467,27 @@ com.akamai.miniwsa/
 │   │   ├── StatsController.java
 │   │   └── SamplesController.java
 │   ├── dto/
-│   │   ├── SecurityEventRequest.java
+│   │   ├── SecurityEventRequest.java       ← ingestion DTOs stay at this level
 │   │   ├── RuleRequest.java
 │   │   ├── GeoLocationRequest.java
 │   │   ├── IngestionResponse.java
-│   │   ├── StatsSummaryResponse.java
-│   │   ├── SamplesResponse.java
-│   │   └── EnrichedEventDTO.java
+│   │   ├── IngestionEventStatus.java
+│   │   ├── stats/                          ← analytics DTOs in sub-package
+│   │   │   ├── StatsSummaryResponse.java
+│   │   │   ├── CategoryStats.java
+│   │   │   ├── AttackerStats.java
+│   │   │   └── PathStats.java
+│   │   └── samples/                        ← samples DTOs in sub-package
+│   │       ├── SamplesResponse.java
+│   │       └── EnrichedEventResponse.java
 │   └── exception/
 │       ├── GlobalExceptionHandler.java
-│       └── ValidationErrorResponse.java
+│       └── MalformedIngestionRequestException.java
 ├── domain/
+│   ├── SecurityEvent.java
 │   ├── EnrichedEvent.java
+│   ├── Rule.java
+│   ├── GeoLocation.java
 │   ├── RuleCategory.java
 │   ├── Action.java
 │   └── Severity.java
@@ -454,14 +498,20 @@ com.akamai.miniwsa/
 │   └── RepeatOffenderCache.java
 ├── service/
 │   ├── IngestionService.java
+│   ├── SecurityEventValidator.java
 │   ├── StatsService.java
 │   └── SamplesService.java
 ├── repository/
-│   ├── EventRepository.java
-│   └── StatsRepository.java
+│   ├── EventRepository.java               ← write-only interface
+│   ├── ClickHouseEventRepository.java     ← write implementation
+│   ├── StatsRepository.java               ← read interface (4 aggregation methods)
+│   ├── ClickHouseStatsRepository.java     ← aggregation implementation
+│   ├── SamplesRepository.java             ← read interface (query + count)
+│   └── ClickHouseSamplesRepository.java   ← paginated SELECT implementation
 ├── config/
 │   ├── ClickHouseConfig.java
-│   └── RedisConfig.java
+│   ├── RepeatOffenderProperties.java
+│   └── ClockConfig.java
 └── generator/
-    └── DataGeneratorRunner.java
+    └── DataGeneratorRunner.java            ← Python script under /scripts/
 ```

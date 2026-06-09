@@ -43,7 +43,7 @@ public class RepeatOffenderCache {
      * i.e. has produced more than {@code threshold} events (including this one) within
      * the trailing {@code windowMinutes} window, measured from the event's own timestamp.
      */
-    public boolean isRepeatOffender(String clientIp, String eventId, Instant eventTimestamp) {
+    public RepeatOffenderResult isRepeatOffender(String clientIp, String eventId, Instant eventTimestamp) {
         String key = KEY_PREFIX + clientIp;
         ZSetOperations<String, String> zSetOps = redisTemplate.opsForZSet();
         double score = eventTimestamp.toEpochMilli();
@@ -60,6 +60,6 @@ public class RepeatOffenderCache {
         boolean repeatOffender = currentCount > properties.threshold();
         log.debug("Repeat-offender check: clientIp={} count={} threshold={} -> {}",
                 clientIp, currentCount, properties.threshold(), repeatOffender);
-        return repeatOffender;
+        return new RepeatOffenderResult(repeatOffender, currentCount);
     }
 }

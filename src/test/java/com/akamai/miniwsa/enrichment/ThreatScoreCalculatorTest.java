@@ -33,7 +33,8 @@ class ThreatScoreCalculatorTest {
     @BeforeEach
     void setUp() {
         calculator = new ThreatScoreCalculator(repeatOffenderCache);
-        lenient().when(repeatOffenderCache.isRepeatOffender(anyString(), anyString(), any())).thenReturn(false);
+        lenient().when(repeatOffenderCache.isRepeatOffender(anyString(), anyString(), any()))
+                .thenReturn(new RepeatOffenderResult(false, 1));
     }
 
     @ParameterizedTest
@@ -89,7 +90,8 @@ class ThreatScoreCalculatorTest {
 
     @Test
     void addsRepeatOffenderBonusWhenCacheReportsRepeatOffender() {
-        when(repeatOffenderCache.isRepeatOffender(anyString(), anyString(), any())).thenReturn(true);
+        when(repeatOffenderCache.isRepeatOffender(anyString(), anyString(), any()))
+                .thenReturn(new RepeatOffenderResult(true, 6));
 
         SecurityEvent event = event(Severity.LOW, Action.MONITOR, "/api/v1/data");
         assertThat(calculator.calculate(event)).isEqualTo(10 + 15);
@@ -97,7 +99,8 @@ class ThreatScoreCalculatorTest {
 
     @Test
     void addsNoRepeatOffenderBonusWhenCacheReportsNotARepeatOffender() {
-        when(repeatOffenderCache.isRepeatOffender(anyString(), anyString(), any())).thenReturn(false);
+        when(repeatOffenderCache.isRepeatOffender(anyString(), anyString(), any()))
+                .thenReturn(new RepeatOffenderResult(false, 3));
 
         SecurityEvent event = event(Severity.LOW, Action.MONITOR, "/api/v1/data");
         assertThat(calculator.calculate(event)).isEqualTo(10);
@@ -105,7 +108,8 @@ class ThreatScoreCalculatorTest {
 
     @Test
     void combinesAllFactorsAdditively() {
-        when(repeatOffenderCache.isRepeatOffender(anyString(), anyString(), any())).thenReturn(true);
+        when(repeatOffenderCache.isRepeatOffender(anyString(), anyString(), any()))
+                .thenReturn(new RepeatOffenderResult(true, 6));
 
         SecurityEvent event = event(Severity.HIGH, Action.ALERT, "/api/v1/login");
         // 30 (HIGH) + 10 (ALERT) + 15 (path) + 15 (repeat offender) = 70
@@ -114,7 +118,8 @@ class ThreatScoreCalculatorTest {
 
     @Test
     void capsScoreAt100() {
-        when(repeatOffenderCache.isRepeatOffender(anyString(), anyString(), any())).thenReturn(true);
+        when(repeatOffenderCache.isRepeatOffender(anyString(), anyString(), any()))
+                .thenReturn(new RepeatOffenderResult(true, 6));
 
         SecurityEvent event = event(Severity.CRITICAL, Action.DENY, "/admin/login");
         // 40 (CRITICAL) + 20 (DENY) + 15 (path) + 15 (repeat offender) = 90

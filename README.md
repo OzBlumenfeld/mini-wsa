@@ -8,23 +8,37 @@ See [REQUIREMENTS.md](REQUIREMENTS.md) for the full assignment spec, and [DESIGN
 
 ## How to Build and Run
 
-### Prerequisites
+### Option A: Docker only (no Java required)
 
-- Java 21+
-- Maven (or use the included `./mvnw` wrapper)
-- Docker + Docker Compose
-
-### 1. Start dependencies
+The entire stack — app, ClickHouse, and Redis — runs via Docker Compose. No local JDK or Maven needed.
 
 ```bash
-docker compose up -d
+docker compose up
+```
+
+On first run this builds the app image from the local `Dockerfile`. If the image already exists and you've changed source code, force a rebuild:
+
+```bash
+docker compose up --build
 ```
 
 This brings up:
+- **App** on `http://localhost:8080` — built from local `src/` via the multi-stage Dockerfile
 - **ClickHouse** on ports `8123` (HTTP) and `9000` (native) — schema is auto-applied from [src/main/resources/schema.sql](src/main/resources/schema.sql)
 - **Redis** on port `6379`
+- **Redis Insight UI** on `http://localhost:5540`
 
-### 2. Run the application
+### Option B: Local development (Java required)
+
+Prerequisites: Java 21+, Docker + Docker Compose
+
+**1. Start dependencies only**
+
+```bash
+docker compose up -d redis clickhouse
+```
+
+**2. Run the application**
 
 ```bash
 ./mvnw spring-boot:run
@@ -32,7 +46,7 @@ This brings up:
 
 The app starts on `http://localhost:8080`.
 
-### 3. Run tests
+### Run tests
 
 ```bash
 ./mvnw test
@@ -139,7 +153,7 @@ See [DESIGN.md](DESIGN.md) for the full architecture diagram, data flow, and pac
 | [MiniWsaApplication.java](src/main/java/com/akamai/miniwsa/MiniWsaApplication.java) | Spring Boot main class |
 | [src/main/resources/application.yml](src/main/resources/application.yml) | App config — ports, ClickHouse URL, Redis, repeat-offender tuning |
 | [src/main/resources/schema.sql](src/main/resources/schema.sql) | ClickHouse DDL — auto-applied by Docker Compose on first start |
-| [docker-compose.yml](docker-compose.yml) | Brings up ClickHouse + Redis |
+| [docker-compose.yml](docker-compose.yml) | Brings up the full stack — app (built from Dockerfile), ClickHouse, Redis |
 
 ### API Layer
 

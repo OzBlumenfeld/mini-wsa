@@ -56,7 +56,7 @@ class RepeatOffenderCacheTest {
 
     @Test
     void firstEventFromFreshIpIsNotARepeatOffender() {
-        boolean repeatOffender = cache.isRepeatOffender("203.0.113.1", "evt-1", BASE_TIME);
+        boolean repeatOffender = cache.isRepeatOffender("203.0.113.1", "evt-1", BASE_TIME).repeatOffender();
         assertThat(repeatOffender).isFalse();
     }
 
@@ -64,11 +64,11 @@ class RepeatOffenderCacheTest {
     void sixthEventWithinWindowTriggersRepeatOffenderBonus() {
         String clientIp = "203.0.113.2";
         for (int i = 1; i <= 5; i++) {
-            boolean result = cache.isRepeatOffender(clientIp, "evt-" + i, BASE_TIME.plusSeconds(i * 10L));
+            boolean result = cache.isRepeatOffender(clientIp, "evt-" + i, BASE_TIME.plusSeconds(i * 10L)).repeatOffender();
             assertThat(result).as("event #%d should not yet trigger the bonus", i).isFalse();
         }
 
-        boolean sixth = cache.isRepeatOffender(clientIp, "evt-6", BASE_TIME.plusSeconds(60));
+        boolean sixth = cache.isRepeatOffender(clientIp, "evt-6", BASE_TIME.plusSeconds(60)).repeatOffender();
         assertThat(sixth).as("6th event (count > 5, inclusive) should trigger the bonus").isTrue();
     }
 
@@ -84,7 +84,7 @@ class RepeatOffenderCacheTest {
 
         // a new event 20 minutes later: the stale ones should be evicted, leaving only this one
         Instant current = BASE_TIME.plus(20, ChronoUnit.MINUTES);
-        boolean repeatOffender = cache.isRepeatOffender(clientIp, "fresh-1", current);
+        boolean repeatOffender = cache.isRepeatOffender(clientIp, "fresh-1", current).repeatOffender();
 
         assertThat(repeatOffender).as("stale entries should have been evicted, count should be 1").isFalse();
     }
@@ -99,11 +99,11 @@ class RepeatOffenderCacheTest {
         }
 
         // ipB's first event should not be affected by ipA's history
-        boolean ipBFirstEvent = cache.isRepeatOffender(ipB, "b-1", BASE_TIME.plusSeconds(100));
+        boolean ipBFirstEvent = cache.isRepeatOffender(ipB, "b-1", BASE_TIME.plusSeconds(100)).repeatOffender();
         assertThat(ipBFirstEvent).isFalse();
 
         // ipA's 6th event should still trigger the bonus
-        boolean ipASixthEvent = cache.isRepeatOffender(ipA, "a-6", BASE_TIME.plusSeconds(6));
+        boolean ipASixthEvent = cache.isRepeatOffender(ipA, "a-6", BASE_TIME.plusSeconds(6)).repeatOffender();
         assertThat(ipASixthEvent).isTrue();
     }
 
