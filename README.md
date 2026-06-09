@@ -214,32 +214,3 @@ See [DESIGN.md](DESIGN.md) for the full architecture diagram, data flow, and pac
 | Part 5 — Data Generator script | Designed, not yet coded |
 | Docker Compose (ClickHouse + Redis) | Done |
 
----
-
-## Storage Choice
-
-**ClickHouse** for events, **Redis** for the repeat-offender sliding window.
-
-ClickHouse is purpose-built for append-only time-series data with `GROUP BY` analytics at scale. The `MergeTree` engine partitioned by month and ordered by `(config_id, timestamp)` maps directly onto the two most common query patterns: filter by config, range by time. Built-in `topK()` aggregates handle top-attacker and top-path queries without any in-memory work. `LowCardinality(String)` on enum columns (severity, category, action, country) gives dictionary encoding for free.
-
-Redis handles the repeat-offender check because it requires a sub-millisecond count at write time — querying ClickHouse on every ingest event would add round-trip latency and fan out query load onto the OLAP store. A sorted set per `clientIp` gives O(log N) insert + sliding window eviction and O(1) count reads.
-
-Full justification with trade-off analysis: [DESIGN.md — Storage Design](DESIGN.md#storage-design).
-
----
-
-## What I'd Improve with More Time
-
-- **ClickHouse materialized views** for pre-aggregated `byCategory`/`byAction` stats — eliminates full scans on the summary endpoint.
-- **Deduplication** — Redis Set check on `eventId` at ingest time (write to Redis only after successful ClickHouse insert to avoid losing legitimate retries on DB failure). Full analysis in [DESIGN.md — Duplicate Event Handling](DESIGN.md#duplicate-event-handling).
-- **Schema migrations via Flyway** — currently the `CREATE TABLE` is applied raw by Docker Compose.
-- **ClickHouse connection pooling** — the current JDBC setup creates a single `DataSource` with no pool config.
-- **Kafka ingestion** — ClickHouse has a native Kafka engine that can consume topics directly; would remove the HTTP ingestion bottleneck at high scale.
-
----
-
-## Challenging Parts
-
-**Threat score + repeat-offender at write time:** The score must be computed synchronously during ingestion, but the repeat-offender check needs a recent event count for the client IP. Querying ClickHouse at insert time would serialize ingestion on an OLAP query. Using Redis sorted sets with a sliding window (`ZADD` + `ZREMRANGEBYSCORE` + `ZCARD`) keeps the check under a millisecond and scales independently of the event store.
-
-**Per-event result semantics for batch ingestion:** The spec returns `201 Created` even when some events in a batch are rejected — but `400` when the request body itself is unparseable. This required separating request-level parsing failures (handled by `GlobalExceptionHandler`) from field-level validation failures (handled by `IngestionService` per event), which drove the `MalformedIngestionRequestException` + `GlobalExceptionHandler` split.
