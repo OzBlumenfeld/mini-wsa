@@ -1,0 +1,24 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: mini-wsa
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+miniwsa:
+  clickhouse:
+    url: jdbc:ch://localhost:8123/default
+  repeat-offender:
+    window-minutes: 10
+    threshold: 5
+    key-ttl-seconds: 900
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

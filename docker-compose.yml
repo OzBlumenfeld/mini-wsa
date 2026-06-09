@@ -1,0 +1,17 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.5-alpine
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - ./src/main/resources/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
