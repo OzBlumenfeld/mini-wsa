@@ -1,0 +1,6 @@
+.git
+target
+.mvn/wrapper/maven-wrapper.jar
+*.md
+assignment.pdf
+scripts
