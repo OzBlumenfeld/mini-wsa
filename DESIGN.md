@@ -285,10 +285,10 @@ CLI arguments may be added later if stress-testing scenarios require it.
 
 **Generation strategy:**
 - Pool of realistic client IPs, hostnames, paths, user agents.
-- **Attack waves:** pick a random IP + path, generate `WAVE_SIZE` events from that IP to that path within a short time window — simulates coordinated attack campaigns and triggers the repeat offender bonus.
+- **Attack waves:** pick a random IP + path, generate `WAVE_SIZE` events from that IP to that path within a short time window — simulates coordinated attack campaigns and triggers the repeat offender bonus. All waves are fired concurrently (not sequentially) — batches from every wave are merged into a single pool and sent in parallel via a thread pool.
 - If `IPS` is set, round-robin through that list for every event (both wave and background) instead of the built-in pool.
 - Events outside waves are uniformly random across the IP pool.
-- Sends events in batches of `BATCH_SIZE` to the ingestion endpoint.
+- Sends events in batches of `BATCH_SIZE` concurrently via a `ThreadPoolExecutor` (up to 32 workers per send phase).
 - Prints a summary: total sent, total accepted, total rejected.
 
 

@@ -13,7 +13,8 @@ uv automatically creates an isolated venv and installs 'requests' on first run.
 """
 
 import random
-import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -23,11 +24,10 @@ import requests
 # ---------------------------------------------------------------------------
 
 TARGET_URL   = "http://localhost:8080/v1/events/ingest"
-EVENT_COUNT  = 15000   # total background (non-wave) events
-ATTACK_WAVES = 3        # number of coordinated attack wave campaigns
-WAVE_SIZE    = 5000      # events per wave (must be >5 to trigger repeat-offender bonus)
+EVENT_COUNT  = 100000   # total background (non-wave) events
+ATTACK_WAVES = 2        # number of coordinated attack wave campaigns
+WAVE_SIZE    = 50000      # events per wave (must be >5 to trigger repeat-offender bonus)
 BATCH_SIZE   = 500      # events per HTTP POST (max 500 per API contract)
-WAVE_DELAY_S = 5       # seconds to pause between consecutive waves (0 = no delay)
 IPS          = []       # override IP pool: leave empty to use built-in pool,
                         # or set e.g. ["1.2.3.4", "5.6.7.8"] to round-robin all events
 
@@ -239,38 +239,55 @@ def send_batch(session: requests.Session, batch: list) -> tuple[int, int]:
         return 0, len(batch)
 
 
-def _send_all(session: requests.Session, events: list, totals: dict) -> None:
-    """Chunk events into BATCH_SIZE batches and send each."""
-    for i in range(0, len(events), BATCH_SIZE):
-        batch = events[i : i + BATCH_SIZE]
-        acc, rej = send_batch(session, batch)
-        totals["sent"]     += len(batch)
-        totals["accepted"] += acc
-        totals["rejected"] += rej
-        print(".", end="", flush=True)
+def _send_all_concurrent(events: list, totals: dict, lock: threading.Lock) -> None:
+    """Chunk events into BATCH_SIZE batches and send all batches concurrently."""
+    batches = [events[i : i + BATCH_SIZE] for i in range(0, len(events), BATCH_SIZE)]
+
+    def _send_one(batch):
+        with requests.Session() as s:
+            return len(batch), *send_batch(s, batch)
+
+    with ThreadPoolExecutor(max_workers=min(32, len(batches))) as executor:
+        futures = {executor.submit(_send_one, b): b for b in batches}
+        for future in as_completed(futures):
+            sent, acc, rej = future.result()
+            with lock:
+                totals["sent"]     += sent
+                totals["accepted"] += acc
+                totals["rejected"] += rej
+            print(".", end="", flush=True)
 
 
 def main() -> None:
-    # future: argparse can be wired here if CLI flags are needed
     totals = {"sent": 0, "accepted": 0, "rejected": 0}
+    lock = threading.Lock()
 
-    with requests.Session() as session:
-        # --- Attack waves (sent as distinct sequential blocks) ---
-        for w in range(ATTACK_WAVES):
-            now  = datetime.now(tz=timezone.utc).replace(tzinfo=None)
-            ip   = random.choice(CLIENT_IPS)
-            path = random.choice([p for p in PATHS if "/admin" in p or "/login" in p] or PATHS)
-            events = make_wave_events(w, ip, path, WAVE_SIZE, now)
-            _send_all(session, events, totals)
-            print(f"  Wave {w + 1}/{ATTACK_WAVES} done  ({ip} → {path})")
-            if w < ATTACK_WAVES - 1 and WAVE_DELAY_S > 0:
-                time.sleep(WAVE_DELAY_S)
+    now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
 
-        # --- Background traffic (shuffled) ---
-        print(f"\nSending {EVENT_COUNT:,} background events...")
-        bg_events = make_background_events(EVENT_COUNT, datetime.now(tz=timezone.utc).replace(tzinfo=None))
-        random.shuffle(bg_events)
-        _send_all(session, bg_events, totals)
+    # --- Build all waves upfront ---
+    wave_meta = []
+    all_wave_events = []
+    for w in range(ATTACK_WAVES):
+        ip   = random.choice(CLIENT_IPS)
+        path = random.choice([p for p in PATHS if "/admin" in p or "/login" in p] or PATHS)
+        events = make_wave_events(w, ip, path, WAVE_SIZE, now)
+        wave_meta.append((w, ip, path))
+        all_wave_events.extend(events)
+
+    print(f"Sending {ATTACK_WAVES} wave(s) ({len(all_wave_events):,} events) concurrently...")
+    for w, ip, path in wave_meta:
+        print(f"  Wave {w + 1}: {ip} → {path}")
+
+    _send_all_concurrent(all_wave_events, totals, lock)
+
+    for w, ip, path in wave_meta:
+        print(f"\n  Wave {w + 1}/{ATTACK_WAVES} done  ({ip} → {path})")
+
+    # --- Background traffic (shuffled) ---
+    print(f"\nSending {EVENT_COUNT:,} background events...")
+    bg_events = make_background_events(EVENT_COUNT, datetime.now(tz=timezone.utc).replace(tzinfo=None))
+    random.shuffle(bg_events)
+    _send_all_concurrent(bg_events, totals, lock)
 
     print(f"\n\nDone.")
     print(f"  Total sent:  {totals['sent']:>8,}")

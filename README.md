@@ -272,5 +272,6 @@ The threat score needs a real-time count of how many events a given IP produced 
 
 **4. Treating design documentation as a contract, not a post-hoc write-up**
 
-With five features spanning three storage layers and a real-time enrichment pipeline, decisions in one layer produce second-order effects elsewhere — and no compiler catches drift between a schema rationale and the actual DDL. The challenge was to write `REQUIREMENTS.md` and `DESIGN.md` as authoritative ground truth *before* implementing each layer, with every trade-off and rejected alternative captured there. That constraint surfaced two real tensions mid-build: the `ReplacingMergeTree` vs `MergeTree` dedup choice, and the Redis-vs-ClickHouse latency question for repeat-offender checks. Having the reasoning written down before either option was committed to code made both decisions faster and kept the final implementation fully traceable back to its motivation.
+ The challenge was to write `REQUIREMENTS.md` and `DESIGN.md` as authoritative ground truth *before* implementing each layer, with every trade-off and rejected alternative captured there. Having the reasoning written down before either option was committed to code made both decisions faster and kept the final implementation fully traceable back to its motivation.
+ In the AI era good documentation and letting the agents/people know what are your key decisions and consideration means a lot and it's very different than the classical engineering that you just have design where it's very high level.
 
