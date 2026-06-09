@@ -9,15 +9,22 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.List;
+import java.util.TimeZone;
 
 @Repository
 public class ClickHouseSamplesRepository implements SamplesRepository {
 
+    // ClickHouse JDBC returns DateTime64('UTC') columns as strings without explicit
+    // timezone, so getTimestamp() without a Calendar applies the JVM's local offset.
+    // Passing a UTC Calendar forces correct epoch-millisecond interpretation.
+    private static final Calendar UTC_CAL = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
+
     private static final RowMapper<EnrichedEventResponse> EVENT_ROW_MAPPER = (rs, rowNum) ->
             new EnrichedEventResponse(
                     rs.getString("event_id"),
-                    rs.getTimestamp("timestamp").toInstant(),
+                    rs.getTimestamp("timestamp", UTC_CAL).toInstant(),
                     rs.getLong("config_id"),
                     rs.getString("policy_id"),
                     rs.getString("client_ip"),

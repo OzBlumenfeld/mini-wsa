@@ -2,7 +2,9 @@
 
 A simplified **Web Security Analytics** pipeline, modeled after Akamai's WSA platform. It ingests raw security events, enriches them in real time (attack classification + threat scoring), persists them to ClickHouse, and exposes REST APIs for analytics and event sampling.
 
-See [REQUIREMENTS.md](REQUIREMENTS.md) for the full assignment spec, and [DESIGN.md](DESIGN.md) for architecture decisions and trade-offs.
+See [REQUIREMENTS.md](REQUIREMENTS.md) for the full assignment spec.
+
+**Two-document structure:** This README covers setup, API reference, and the assignment-required summary sections. [DESIGN.md](DESIGN.md) is the full technical reference — architecture diagram, layer-by-layer breakdown, ClickHouse schema rationale, data flow, package structure, and trade-off analysis. Keeping them separate means the README stays scannable for a first-time reader while deep implementation decisions live in one authoritative place.
 
 ---
 
@@ -217,14 +219,58 @@ See [DESIGN.md](DESIGN.md) for the full architecture diagram, data flow, and pac
 
 ---
 
-## What's Built So Far
+## What's Built
 
 | Part | Status |
 |---|---|
 | Part 1 — Ingestion API (`POST /v1/events/ingest`) | Done |
 | Part 2 — Classification & Enrichment (attackType, threatScore, repeatOffender) | Done |
-| Part 3 — Statistics API (`GET /v1/stats/summary`) | Designed, not yet coded |
-| Part 4 — Samples API (`GET /v1/events/samples`) | Designed, not yet coded |
-| Part 5 — Data Generator script | Designed, not yet coded |
+| Part 3 — Statistics API (`GET /v1/stats/summary`) | Done |
+| Part 4 — Samples API (`GET /v1/events/samples`) | Done |
+| Part 5 — Data Generator script | Done |
 | Docker Compose (ClickHouse + Redis) | Done |
+
+---
+
+## Storage Design Choices
+
+**ClickHouse** is used as the primary event store. Security analytics workloads — counting by category, top-N attackers, time-range aggregations — map directly to its columnar storage and vectorized GROUP BY execution. Specific design choices:
+- `MergeTree` engine with `ORDER BY (config_id, timestamp)` matches the dominant query pattern (filter by config, range by time)
+- `LowCardinality(String)` on enum-like fields (severity, category, action, country) gives dictionary encoding, reducing storage and improving filter scan speed
+- `PARTITION BY toYYYYMM(timestamp)` enables partition pruning for long time-range queries
+- Events are immutable once written — no UPDATE/DELETE needed
+
+**Redis** handles the repeat-offender sliding window. The threat-score calculation needs to know, at write time, how many events a given IP produced in the last 10 minutes. Querying ClickHouse on every ingest would add significant latency; ClickHouse is optimized for bulk reads, not sub-millisecond point lookups. A Redis sorted set gives O(log N) insert + range eviction and sub-millisecond reads, keeping the ingestion path fast.
+
+See [DESIGN.md § Storage Design](DESIGN.md#storage-design) for the full rationale and trade-off table.
+
+---
+
+## What I Would Improve with More Time
+
+- **Connection pooling** — the ClickHouse JDBC client currently creates connections on demand; a pool (HikariCP or ClickHouse's own pooling) would reduce latency under concurrent load.
+- **Schema migrations via Flyway** — the DDL is currently applied manually from `schema.sql`; versioned migrations would make schema evolution safe in production.
+- **Kafka ingestion** — ClickHouse has a native Kafka connector engine that can consume directly from topics, removing the HTTP ingestion hop for high-throughput pipelines.
+- **Event deduplication** — currently the same `eventId` can be inserted twice. The cleanest approach given the existing schema is a Redis Set check (per eventId, written after a successful ClickHouse insert) with a TTL matching the expected retry window. See [DESIGN.md § Duplicate Event Handling](DESIGN.md#duplicate-event-handling) for the full trade-off analysis.
+- **Rate limiting** - The Bonus feature as it using Redis and same sliding window pattern based on the api path of sample/stats
+- **More Tests** - I have only the baseline - in order to trust all of the current features there need to be much more integration tests cases. + even more unit testing with mockings.
+---
+
+## Challenges and How I Solved Them
+
+**1. Per-event accepted/rejected reporting inside a single 201 response**
+
+The assignment requires that a batch request returns `201 Created` even when some events fail validation, with per-event error details. Standard Spring `@Valid` on a list short-circuits at the first failure and returns 400 for the whole batch. The solution was to remove Bean Validation from the list elements entirely and delegate to a `SecurityEventValidator` called programmatically per event inside `IngestionService`, collecting field-level errors into a per-event result list. Jackson-level failures (malformed JSON, type mismatches) still produce 400 at the controller boundary, which is the correct behavior per spec.
+
+**2. Repeat-offender check at write time without blocking ingestion**
+
+The threat score needs a real-time count of how many events a given IP produced in the last 10 minutes. Querying ClickHouse for this on every event would add a synchronous read to the write path — ClickHouse is column-oriented and optimized for bulk analytical reads, not sub-millisecond point lookups. The solution was a Redis sorted set per client IP: `ZADD` the event, `ZREMRANGEBYSCORE` to evict entries older than 10 minutes, `ZCARD` to get the count — all in a single pipeline under 1 ms.
+
+**3. MergeTree ORDER BY vs deduplication**
+
+`ReplacingMergeTree` provides engine-level deduplication but requires `event_id` in the `ORDER BY`, which would break the `(config_id, timestamp)` sort order that makes analytics queries fast. Switching the sort key for dedup correctness would either require a secondary materialized view to restore query performance, or accepting slow aggregation queries. The decision was to stay with plain `MergeTree` and enforce uniqueness at the application layer, with the trade-off documented explicitly.
+
+**4. Treating design documentation as a contract, not a post-hoc write-up**
+
+With five features spanning three storage layers and a real-time enrichment pipeline, decisions in one layer produce second-order effects elsewhere — and no compiler catches drift between a schema rationale and the actual DDL. The challenge was to write `REQUIREMENTS.md` and `DESIGN.md` as authoritative ground truth *before* implementing each layer, with every trade-off and rejected alternative captured there. That constraint surfaced two real tensions mid-build: the `ReplacingMergeTree` vs `MergeTree` dedup choice, and the Redis-vs-ClickHouse latency question for repeat-offender checks. Having the reasoning written down before either option was committed to code made both decisions faster and kept the final implementation fully traceable back to its motivation.
 
