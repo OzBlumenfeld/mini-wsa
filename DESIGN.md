@@ -75,7 +75,7 @@ Responsibility: HTTP boundary. Validates input, maps to/from DTOs, delegates to 
 
 | Controller | Endpoints | Responsibility |
 |---|---|---|
-| `IngestionController` | `POST /v1/events/ingest` | Accept single or batch events, trigger enrichment pipeline |
+| `IngestionController` | `POST /v1/events/ingest` | Accept a JSON array of up to 500 events, trigger enrichment pipeline |
 | `StatsController` | `GET /v1/stats/summary` | Return aggregated analytics for a configId + time range |
 | `SamplesController` | `GET /v1/events/samples` | Return paginated, filtered enriched events |
 
@@ -84,11 +84,13 @@ Responsibility: HTTP boundary. Validates input, maps to/from DTOs, delegates to 
 - Validation handled by `@Valid` + Bean Validation annotations on DTOs.
 - A global `@ControllerAdvice` (`GlobalExceptionHandler`) translates validation failures to structured 400 responses with field-level error details.
 - All timestamps validated as ISO 8601; invalid formats return 400 with a clear message.
-- `POST /v1/events/ingest` returns `201 Created` whenever the batch body is parseable —
-  even if some/all individual events are rejected — with per-event results in the
-  response body. `400 Bad Request` is reserved for request-level failures (malformed
-  JSON, or a body that isn't a single event object or an array of event objects), where
-  no events could be parsed at all.
+- `POST /v1/events/ingest` accepts a JSON array of up to 500 events and returns
+  `201 Created` whenever the array is parseable — even if some/all individual events fail
+  validation — with per-event results in the response body. `400 Bad Request` is returned
+  for: malformed JSON, a non-array body, an empty array, a batch exceeding 500 events, or
+  a type/enum mismatch in any event (Jackson fails the whole request before the controller
+  method runs in those cases). Bean Validation errors (missing fields, blank strings) are
+  still reported per-event.
 
 **DTOs (Request/Response):**
 
@@ -319,8 +321,8 @@ EventRepository.insertBatch(enrichedEvents)
 201 Created  { accepted: N, rejected: M,
                results: [ { eventId, status, errors? }, ... ] }
 
-(400 Bad Request only if the request body itself can't be parsed into events —
- e.g. malformed JSON, empty/non-array body)
+(400 Bad Request for: malformed JSON, non-array body, empty array,
+ batch exceeding 500 events, or type/enum mismatch in any event)
 ```
 
 ### Stats Query Flow

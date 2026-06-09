@@ -2,8 +2,9 @@ package com.akamai.miniwsa.api.controller;
 
 import com.akamai.miniwsa.api.dto.IngestionEventStatus;
 import com.akamai.miniwsa.api.dto.IngestionResponse;
-import com.akamai.miniwsa.api.exception.MalformedIngestionRequestException;
 import com.akamai.miniwsa.service.IngestionService;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -12,6 +13,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.List;
+import java.util.stream.IntStream;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
@@ -25,17 +27,20 @@ class IngestionControllerTest {
     @Autowired
     private MockMvc mockMvc;
 
+    @Autowired
+    private ObjectMapper objectMapper;
+
     @MockBean
     private IngestionService ingestionService;
 
     @Test
-    void singleEventObjectReturns201WithResults() throws Exception {
+    void arrayOfOneEventReturns201WithResults() throws Exception {
         when(ingestionService.ingest(any())).thenReturn(new IngestionResponse(
                 1, 0, List.of(IngestionResponse.EventResult.accepted("evt-1"))));
 
         mockMvc.perform(post("/v1/events/ingest")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{ \"eventId\": \"evt-1\" }"))
+                        .content("[ { \"eventId\": \"evt-1\" } ]"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.accepted").value(1))
                 .andExpect(jsonPath("$.rejected").value(0))
@@ -63,10 +68,7 @@ class IngestionControllerTest {
     }
 
     @Test
-    void malformedBodyShapeReturns400() throws Exception {
-        when(ingestionService.ingest(any()))
-                .thenThrow(new MalformedIngestionRequestException("Request body must be a single event object or an array of event objects"));
-
+    void nonArrayBodyReturns400() throws Exception {
         mockMvc.perform(post("/v1/events/ingest")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("\"just a string\""))
@@ -79,6 +81,31 @@ class IngestionControllerTest {
         mockMvc.perform(post("/v1/events/ingest")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{ not valid json "))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400));
+    }
+
+    @Test
+    void emptyArrayReturns400() throws Exception {
+        mockMvc.perform(post("/v1/events/ingest")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("[]"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400));
+    }
+
+    @Test
+    void oversizedBatchReturns400() throws Exception {
+        var array = objectMapper.createArrayNode();
+        IntStream.rangeClosed(1, 501).forEach(i -> {
+            ObjectNode stub = objectMapper.createObjectNode();
+            stub.put("eventId", "evt-" + i);
+            array.add(stub);
+        });
+
+        mockMvc.perform(post("/v1/events/ingest")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(array)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(400));
     }
