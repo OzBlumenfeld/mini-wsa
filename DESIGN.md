@@ -145,6 +145,7 @@ Responsibility: Stateless classification + stateful threat scoring. This is the 
 **`AttackClassifier`**
 - Pure function: maps `rule.category` enum → `attackType` human-readable string.
 - Implemented as an immutable `EnumMap<RuleCategory, String>` — no branching, O(1) lookup.
+- Called at write time; `attackType` is stored alongside `rule_category` in ClickHouse.
 
 ```java
 INJECTION         → "SQL/Command Injection"
